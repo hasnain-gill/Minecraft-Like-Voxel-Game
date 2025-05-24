@@ -1,1258 +1,529 @@
-
-( function () {
-
-	// Unlike TrackballControls, it maintains the "up" direction object.up (+Y by default).
-	//
-	//    Orbit - left mouse / touch: one-finger move
-	//    Zoom - middle mouse, or mousewheel / touch: two-finger spread or squish
-	//    Pan - right mouse, or left mouse + ctrl/meta/shiftKey, or arrow keys / touch: two-finger move
-
-	const _changeEvent = {
-		type: 'change'
-	};
-	const _startEvent = {
-		type: 'start'
-	};
-	const _endEvent = {
-		type: 'end'
-	};
-
-	class OrbitControls extends THREE.EventDispatcher {
-
-		constructor( object, domElement ) {
-
-			super();
-			if ( domElement === undefined ) console.warn( 'THREE.OrbitControls: The second parameter "domElement" is now mandatory.' );
-			if ( domElement === document ) console.error( 'THREE.OrbitControls: "document" should not be used as the target "domElement". Please use "renderer.domElement" instead.' );
-			this.object = object;
-			this.domElement = domElement; // Set to false to disable this control
-
-			this.enabled = true; // "target" sets the location of focus, where the object orbits around
-
-			this.target = new THREE.Vector3(); // How far you can dolly in and out ( PerspectiveCamera only )
-
-			this.minDistance = 0;
-			this.maxDistance = Infinity; // How far you can zoom in and out ( OrthographicCamera only )
-
-			this.minZoom = 0;
-			this.maxZoom = Infinity; // How far you can orbit vertically, upper and lower limits.
-			// Range is 0 to Math.PI radians.
-
-			this.minPolarAngle = 0; // radians
-
-			this.maxPolarAngle = Math.PI; // radians
-			// How far you can orbit horizontally, upper and lower limits.
-			// If set, the interval [ min, max ] must be a sub-interval of [ - 2 PI, 2 PI ], with ( max - min < 2 PI )
-
-			this.minAzimuthAngle = - Infinity; // radians
-
-			this.maxAzimuthAngle = Infinity; // radians
-			// Set to true to enable damping (inertia)
-			// If damping is enabled, you must call controls.update() in your animation loop
-
-			this.enableDamping = false;
-			this.dampingFactor = 0.05; // This option actually enables dollying in and out; left as "zoom" for backwards compatibility.
-			// Set to false to disable zooming
-
-			this.enableZoom = true;
-			this.zoomSpeed = 1.0; // Set to false to disable rotating
-
-			this.enableRotate = true;
-			this.rotateSpeed = 1.0; // Set to false to disable panning
-
-			this.enablePan = true;
-			this.panSpeed = 1.0;
-			this.screenSpacePanning = true; // if false, pan orthogonal to world-space direction camera.up
-
-			this.keyPanSpeed = 7.0; // pixels moved per arrow key push
-			// Set to true to automatically rotate around the target
-			// If auto-rotate is enabled, you must call controls.update() in your animation loop
-
-			this.autoRotate = false;
-			this.autoRotateSpeed = 2.0; // 30 seconds per orbit when fps is 60
-			// The four arrow keys
-
-			this.keys = {
-				LEFT: 'ArrowLeft',
-				UP: 'ArrowUp',
-				RIGHT: 'ArrowRight',
-				BOTTOM: 'ArrowDown'
-			}; // Mouse buttons
-
-			this.mouseButtons = {
-				LEFT: THREE.MOUSE.ROTATE,
-				MIDDLE: THREE.MOUSE.DOLLY,
-				RIGHT: THREE.MOUSE.PAN
-			}; // Touch fingers
-
-			this.touches = {
-				ONE: THREE.TOUCH.ROTATE,
-				TWO: THREE.TOUCH.DOLLY_PAN
-			}; // for reset
-
-			this.target0 = this.target.clone();
-			this.position0 = this.object.position.clone();
-			this.zoom0 = this.object.zoom; // the target DOM element for key events
-
-			this._domElementKeyEvents = null; //
-			// public methods
-			//
-
-			this.getPolarAngle = function () {
-
-				return spherical.phi;
-
-			};
-
-			this.getAzimuthalAngle = function () {
-
-				return spherical.theta;
-
-			};
-
-			this.listenToKeyEvents = function ( domElement ) {
-
-				domElement.addEventListener( 'keydown', onKeyDown );
-				this._domElementKeyEvents = domElement;
-
-			};
-
-			this.saveState = function () {
-
-				scope.target0.copy( scope.target );
-				scope.position0.copy( scope.object.position );
-				scope.zoom0 = scope.object.zoom;
-
-			};
-
-			this.reset = function () {
-
-				scope.target.copy( scope.target0 );
-				scope.object.position.copy( scope.position0 );
-				scope.object.zoom = scope.zoom0;
-				scope.object.updateProjectionMatrix();
-				scope.dispatchEvent( _changeEvent );
-				scope.update();
-				state = STATE.NONE;
-
-			}; // this method is exposed, but perhaps it would be better if we can make it private...
-
-
-			this.update = function () {
-
-				const offset = new THREE.Vector3(); // so camera.up is the orbit axis
-
-				const quat = new THREE.Quaternion().setFromUnitVectors( object.up, new THREE.Vector3( 0, 1, 0 ) );
-				const quatInverse = quat.clone().invert();
-				const lastPosition = new THREE.Vector3();
-				const lastQuaternion = new THREE.Quaternion();
-				const twoPI = 2 * Math.PI;
-				return function update() {
-
-					const position = scope.object.position;
-					offset.copy( position ).sub( scope.target ); // rotate offset to "y-axis-is-up" space
-
-					offset.applyQuaternion( quat ); // angle from z-axis around y-axis
-
-					spherical.setFromVector3( offset );
-
-					if ( scope.autoRotate && state === STATE.NONE ) {
-
-						rotateLeft( getAutoRotationAngle() );
-
-					}
-
-					if ( scope.enableDamping ) {
-
-						spherical.theta += sphericalDelta.theta * scope.dampingFactor;
-						spherical.phi += sphericalDelta.phi * scope.dampingFactor;
-
-					} else {
-
-						spherical.theta += sphericalDelta.theta;
-						spherical.phi += sphericalDelta.phi;
-
-					} // restrict theta to be between desired limits
-
-
-					let min = scope.minAzimuthAngle;
-					let max = scope.maxAzimuthAngle;
-
-					if ( isFinite( min ) && isFinite( max ) ) {
-
-						if ( min < - Math.PI ) min += twoPI; else if ( min > Math.PI ) min -= twoPI;
-						if ( max < - Math.PI ) max += twoPI; else if ( max > Math.PI ) max -= twoPI;
-
-						if ( min <= max ) {
-
-							spherical.theta = Math.max( min, Math.min( max, spherical.theta ) );
-
-						} else {
-
-							spherical.theta = spherical.theta > ( min + max ) / 2 ? Math.max( min, spherical.theta ) : Math.min( max, spherical.theta );
-
-						}
-
-					} // restrict phi to be between desired limits
-
-
-					spherical.phi = Math.max( scope.minPolarAngle, Math.min( scope.maxPolarAngle, spherical.phi ) );
-					spherical.makeSafe();
-					spherical.radius *= scale; // restrict radius to be between desired limits
-
-					spherical.radius = Math.max( scope.minDistance, Math.min( scope.maxDistance, spherical.radius ) ); // move target to panned location
-
-					if ( scope.enableDamping === true ) {
-
-						scope.target.addScaledVector( panOffset, scope.dampingFactor );
-
-					} else {
-
-						scope.target.add( panOffset );
-
-					}
-
-					offset.setFromSpherical( spherical ); // rotate offset back to "camera-up-vector-is-up" space
-
-					offset.applyQuaternion( quatInverse );
-					position.copy( scope.target ).add( offset );
-					scope.object.lookAt( scope.target );
-
-					if ( scope.enableDamping === true ) {
-
-						sphericalDelta.theta *= 1 - scope.dampingFactor;
-						sphericalDelta.phi *= 1 - scope.dampingFactor;
-						panOffset.multiplyScalar( 1 - scope.dampingFactor );
-
-					} else {
-
-						sphericalDelta.set( 0, 0, 0 );
-						panOffset.set( 0, 0, 0 );
-
-					}
-
-					scale = 1; // update condition is:
-					// min(camera displacement, camera rotation in radians)^2 > EPS
-					// using small-angle approximation cos(x/2) = 1 - x^2 / 8
-
-					if ( zoomChanged || lastPosition.distanceToSquared( scope.object.position ) > EPS || 8 * ( 1 - lastQuaternion.dot( scope.object.quaternion ) ) > EPS ) {
-
-						scope.dispatchEvent( _changeEvent );
-						lastPosition.copy( scope.object.position );
-						lastQuaternion.copy( scope.object.quaternion );
-						zoomChanged = false;
-						return true;
-
-					}
-
-					return false;
-
-				};
-
-			}();
-
-			this.dispose = function () {
-
-				scope.domElement.removeEventListener( 'contextmenu', onContextMenu );
-				scope.domElement.removeEventListener( 'pointerdown', onPointerDown );
-				scope.domElement.removeEventListener( 'wheel', onMouseWheel );
-				scope.domElement.removeEventListener( 'touchstart', onTouchStart );
-				scope.domElement.removeEventListener( 'touchend', onTouchEnd );
-				scope.domElement.removeEventListener( 'touchmove', onTouchMove );
-				scope.domElement.ownerDocument.removeEventListener( 'pointermove', onPointerMove );
-				scope.domElement.ownerDocument.removeEventListener( 'pointerup', onPointerUp );
-
-				if ( scope._domElementKeyEvents !== null ) {
-
-					scope._domElementKeyEvents.removeEventListener( 'keydown', onKeyDown );
-
-				} //scope.dispatchEvent( { type: 'dispose' } ); // should this be added here?
-
-			}; //
-			// internals
-			//
-
-
-			const scope = this;
-			const STATE = {
-				NONE: - 1,
-				ROTATE: 0,
-				DOLLY: 1,
-				PAN: 2,
-				TOUCH_ROTATE: 3,
-				TOUCH_PAN: 4,
-				TOUCH_DOLLY_PAN: 5,
-				TOUCH_DOLLY_ROTATE: 6
-			};
-			let state = STATE.NONE;
-			const EPS = 0.000001; // current position in spherical coordinates
-
-			const spherical = new THREE.Spherical();
-			const sphericalDelta = new THREE.Spherical();
-			let scale = 1;
-			const panOffset = new THREE.Vector3();
-			let zoomChanged = false;
-			const rotateStart = new THREE.Vector2();
-			const rotateEnd = new THREE.Vector2();
-			const rotateDelta = new THREE.Vector2();
-			const panStart = new THREE.Vector2();
-			const panEnd = new THREE.Vector2();
-			const panDelta = new THREE.Vector2();
-			const dollyStart = new THREE.Vector2();
-			const dollyEnd = new THREE.Vector2();
-			const dollyDelta = new THREE.Vector2();
-
-			function getAutoRotationAngle() {
-
-				return 2 * Math.PI / 60 / 60 * scope.autoRotateSpeed;
-
-			}
-
-			function getZoomScale() {
-
-				return Math.pow( 0.95, scope.zoomSpeed );
-
-			}
-
-			function rotateLeft( angle ) {
-
-				sphericalDelta.theta -= angle;
-
-			}
-
-			function rotateUp( angle ) {
-
-				sphericalDelta.phi -= angle;
-
-			}
-
-			const panLeft = function () {
-
-				const v = new THREE.Vector3();
-				return function panLeft( distance, objectMatrix ) {
-
-					v.setFromMatrixColumn( objectMatrix, 0 ); // get X column of objectMatrix
-
-					v.multiplyScalar( - distance );
-					panOffset.add( v );
-
-				};
-
-			}();
-
-			const panUp = function () {
-
-				const v = new THREE.Vector3();
-				return function panUp( distance, objectMatrix ) {
-
-					if ( scope.screenSpacePanning === true ) {
-
-						v.setFromMatrixColumn( objectMatrix, 1 );
-
-					} else {
-
-						v.setFromMatrixColumn( objectMatrix, 0 );
-						v.crossVectors( scope.object.up, v );
-
-					}
-
-					v.multiplyScalar( distance );
-					panOffset.add( v );
-
-				};
-
-			}(); // deltaX and deltaY are in pixels; right and down are positive
-
-
-			const pan = function () {
-
-				const offset = new THREE.Vector3();
-				return function pan( deltaX, deltaY ) {
-
-					const element = scope.domElement;
-
-					if ( scope.object.isPerspectiveCamera ) {
-
-						// perspective
-						const position = scope.object.position;
-						offset.copy( position ).sub( scope.target );
-						let targetDistance = offset.length(); // half of the fov is center to top of screen
-
-						targetDistance *= Math.tan( scope.object.fov / 2 * Math.PI / 180.0 ); // we use only clientHeight here so aspect ratio does not distort speed
-
-						panLeft( 2 * deltaX * targetDistance / element.clientHeight, scope.object.matrix );
-						panUp( 2 * deltaY * targetDistance / element.clientHeight, scope.object.matrix );
-
-					} else if ( scope.object.isOrthographicCamera ) {
-
-						// orthographic
-						panLeft( deltaX * ( scope.object.right - scope.object.left ) / scope.object.zoom / element.clientWidth, scope.object.matrix );
-						panUp( deltaY * ( scope.object.top - scope.object.bottom ) / scope.object.zoom / element.clientHeight, scope.object.matrix );
-
-					} else {
-
-						// camera neither orthographic nor perspective
-						console.warn( 'WARNING: OrbitControls.js encountered an unknown camera type - pan disabled.' );
-						scope.enablePan = false;
-
-					}
-
-				};
-
-			}();
-
-			function dollyOut( dollyScale ) {
-
-				if ( scope.object.isPerspectiveCamera ) {
-
-					scale /= dollyScale;
-
-				} else if ( scope.object.isOrthographicCamera ) {
-
-					scope.object.zoom = Math.max( scope.minZoom, Math.min( scope.maxZoom, scope.object.zoom * dollyScale ) );
-					scope.object.updateProjectionMatrix();
-					zoomChanged = true;
-
-				} else {
-
-					console.warn( 'WARNING: OrbitControls.js encountered an unknown camera type - dolly/zoom disabled.' );
-					scope.enableZoom = false;
-
-				}
-
-			}
-
-			function dollyIn( dollyScale ) {
-
-				if ( scope.object.isPerspectiveCamera ) {
-
-					scale *= dollyScale;
-
-				} else if ( scope.object.isOrthographicCamera ) {
-
-					scope.object.zoom = Math.max( scope.minZoom, Math.min( scope.maxZoom, scope.object.zoom / dollyScale ) );
-					scope.object.updateProjectionMatrix();
-					zoomChanged = true;
-
-				} else {
-
-					console.warn( 'WARNING: OrbitControls.js encountered an unknown camera type - dolly/zoom disabled.' );
-					scope.enableZoom = false;
-
-				}
-
-			} //
-			// event callbacks - update the object state
-			//
-
-
-			function handleMouseDownRotate( event ) {
-
-				rotateStart.set( event.clientX, event.clientY );
-
-			}
-
-			function handleMouseDownDolly( event ) {
-
-				dollyStart.set( event.clientX, event.clientY );
-
-			}
-
-			function handleMouseDownPan( event ) {
-
-				panStart.set( event.clientX, event.clientY );
-
-			}
-
-			function handleMouseMoveRotate( event ) {
-
-				rotateEnd.set( event.clientX, event.clientY );
-				rotateDelta.subVectors( rotateEnd, rotateStart ).multiplyScalar( scope.rotateSpeed );
-				const element = scope.domElement;
-				rotateLeft( 2 * Math.PI * rotateDelta.x / element.clientHeight ); // yes, height
-
-				rotateUp( 2 * Math.PI * rotateDelta.y / element.clientHeight );
-				rotateStart.copy( rotateEnd );
-				scope.update();
-
-			}
-
-			function handleMouseMoveDolly( event ) {
-
-				dollyEnd.set( event.clientX, event.clientY );
-				dollyDelta.subVectors( dollyEnd, dollyStart );
-
-				if ( dollyDelta.y > 0 ) {
-
-					dollyOut( getZoomScale() );
-
-				} else if ( dollyDelta.y < 0 ) {
-
-					dollyIn( getZoomScale() );
-
-				}
-
-				dollyStart.copy( dollyEnd );
-				scope.update();
-
-			}
-
-			function handleMouseMovePan( event ) {
-
-				panEnd.set( event.clientX, event.clientY );
-				panDelta.subVectors( panEnd, panStart ).multiplyScalar( scope.panSpeed );
-				pan( panDelta.x, panDelta.y );
-				panStart.copy( panEnd );
-				scope.update();
-
-			}
-
-			function handleMouseUp( ) { // no-op
-			}
-
-			function handleMouseWheel( event ) {
-
-				if ( event.deltaY < 0 ) {
-
-					dollyIn( getZoomScale() );
-
-				} else if ( event.deltaY > 0 ) {
-
-					dollyOut( getZoomScale() );
-
-				}
-
-				scope.update();
-
-			}
-
-			function handleKeyDown( event ) {
-
-				let needsUpdate = false;
-
-				switch ( event.code ) {
-
-					case scope.keys.UP:
-						pan( 0, scope.keyPanSpeed );
-						needsUpdate = true;
-						break;
-
-					case scope.keys.BOTTOM:
-						pan( 0, - scope.keyPanSpeed );
-						needsUpdate = true;
-						break;
-
-					case scope.keys.LEFT:
-						pan( scope.keyPanSpeed, 0 );
-						needsUpdate = true;
-						break;
-
-					case scope.keys.RIGHT:
-						pan( - scope.keyPanSpeed, 0 );
-						needsUpdate = true;
-						break;
-
-				}
-
-				if ( needsUpdate ) {
-
-					// prevent the browser from scrolling on cursor keys
-					event.preventDefault();
-					scope.update();
-
-				}
-
-			}
-
-			function handleTouchStartRotate( event ) {
-
-				if ( event.touches.length == 1 ) {
-
-					rotateStart.set( event.touches[ 0 ].pageX, event.touches[ 0 ].pageY );
-
-				} else {
-
-					const x = 0.5 * ( event.touches[ 0 ].pageX + event.touches[ 1 ].pageX );
-					const y = 0.5 * ( event.touches[ 0 ].pageY + event.touches[ 1 ].pageY );
-					rotateStart.set( x, y );
-
-				}
-
-			}
-
-			function handleTouchStartPan( event ) {
-
-				if ( event.touches.length == 1 ) {
-
-					panStart.set( event.touches[ 0 ].pageX, event.touches[ 0 ].pageY );
-
-				} else {
-
-					const x = 0.5 * ( event.touches[ 0 ].pageX + event.touches[ 1 ].pageX );
-					const y = 0.5 * ( event.touches[ 0 ].pageY + event.touches[ 1 ].pageY );
-					panStart.set( x, y );
-
-				}
-
-			}
-
-			function handleTouchStartDolly( event ) {
-
-				const dx = event.touches[ 0 ].pageX - event.touches[ 1 ].pageX;
-				const dy = event.touches[ 0 ].pageY - event.touches[ 1 ].pageY;
-				const distance = Math.sqrt( dx * dx + dy * dy );
-				dollyStart.set( 0, distance );
-
-			}
-
-			function handleTouchStartDollyPan( event ) {
-
-				if ( scope.enableZoom ) handleTouchStartDolly( event );
-				if ( scope.enablePan ) handleTouchStartPan( event );
-
-			}
-
-			function handleTouchStartDollyRotate( event ) {
-
-				if ( scope.enableZoom ) handleTouchStartDolly( event );
-				if ( scope.enableRotate ) handleTouchStartRotate( event );
-
-			}
-
-			function handleTouchMoveRotate( event ) {
-
-				if ( event.touches.length == 1 ) {
-
-					rotateEnd.set( event.touches[ 0 ].pageX, event.touches[ 0 ].pageY );
-
-				} else {
-
-					const x = 0.5 * ( event.touches[ 0 ].pageX + event.touches[ 1 ].pageX );
-					const y = 0.5 * ( event.touches[ 0 ].pageY + event.touches[ 1 ].pageY );
-					rotateEnd.set( x, y );
-
-				}
-
-				rotateDelta.subVectors( rotateEnd, rotateStart ).multiplyScalar( scope.rotateSpeed );
-				const element = scope.domElement;
-				rotateLeft( 2 * Math.PI * rotateDelta.x / element.clientHeight ); // yes, height
-
-				rotateUp( 2 * Math.PI * rotateDelta.y / element.clientHeight );
-				rotateStart.copy( rotateEnd );
-
-			}
-
-			function handleTouchMovePan( event ) {
-
-				if ( event.touches.length == 1 ) {
-
-					panEnd.set( event.touches[ 0 ].pageX, event.touches[ 0 ].pageY );
-
-				} else {
-
-					const x = 0.5 * ( event.touches[ 0 ].pageX + event.touches[ 1 ].pageX );
-					const y = 0.5 * ( event.touches[ 0 ].pageY + event.touches[ 1 ].pageY );
-					panEnd.set( x, y );
-
-				}
-
-				panDelta.subVectors( panEnd, panStart ).multiplyScalar( scope.panSpeed );
-				pan( panDelta.x, panDelta.y );
-				panStart.copy( panEnd );
-
-			}
-
-			function handleTouchMoveDolly( event ) {
-
-				const dx = event.touches[ 0 ].pageX - event.touches[ 1 ].pageX;
-				const dy = event.touches[ 0 ].pageY - event.touches[ 1 ].pageY;
-				const distance = Math.sqrt( dx * dx + dy * dy );
-				dollyEnd.set( 0, distance );
-				dollyDelta.set( 0, Math.pow( dollyEnd.y / dollyStart.y, scope.zoomSpeed ) );
-				dollyOut( dollyDelta.y );
-				dollyStart.copy( dollyEnd );
-
-			}
-
-			function handleTouchMoveDollyPan( event ) {
-
-				if ( scope.enableZoom ) handleTouchMoveDolly( event );
-				if ( scope.enablePan ) handleTouchMovePan( event );
-
-			}
-
-			function handleTouchMoveDollyRotate( event ) {
-
-				if ( scope.enableZoom ) handleTouchMoveDolly( event );
-				if ( scope.enableRotate ) handleTouchMoveRotate( event );
-
-			}
-
-			function handleTouchEnd( ) { // no-op
-			} //
-			// event handlers - FSM: listen for events and reset state
-			//
-
-
-			function onPointerDown( event ) {
-
-				if ( scope.enabled === false ) return;
-
-				switch ( event.pointerType ) {
-
-					case 'mouse':
-					case 'pen':
-						onMouseDown( event );
-						break;
-        // TODO touch
-
-				}
-
-			}
-
-			function onPointerMove( event ) {
-
-				if ( scope.enabled === false ) return;
-
-				switch ( event.pointerType ) {
-
-					case 'mouse':
-					case 'pen':
-						onMouseMove( event );
-						break;
-        // TODO touch
-
-				}
-
-			}
-
-			function onPointerUp( event ) {
-
-				switch ( event.pointerType ) {
-
-					case 'mouse':
-					case 'pen':
-						onMouseUp( event );
-						break;
-        // TODO touch
-
-				}
-
-			}
-
-			function onMouseDown( event ) {
-
-				// Prevent the browser from scrolling.
-				event.preventDefault(); // Manually set the focus since calling preventDefault above
-				// prevents the browser from setting it automatically.
-
-				scope.domElement.focus ? scope.domElement.focus() : window.focus();
-				let mouseAction;
-
-				switch ( event.button ) {
-
-					case 0:
-						mouseAction = scope.mouseButtons.LEFT;
-						break;
-
-					case 1:
-						mouseAction = scope.mouseButtons.MIDDLE;
-						break;
-
-					case 2:
-						mouseAction = scope.mouseButtons.RIGHT;
-						break;
-
-					default:
-						mouseAction = - 1;
-
-				}
-
-				switch ( mouseAction ) {
-
-					case THREE.MOUSE.DOLLY:
-						if ( scope.enableZoom === false ) return;
-						handleMouseDownDolly( event );
-						state = STATE.DOLLY;
-						break;
-
-					case THREE.MOUSE.ROTATE:
-						if ( event.ctrlKey || event.metaKey || event.shiftKey ) {
-
-							if ( scope.enablePan === false ) return;
-							handleMouseDownPan( event );
-							state = STATE.PAN;
-
-						} else {
-
-							if ( scope.enableRotate === false ) return;
-							handleMouseDownRotate( event );
-							state = STATE.ROTATE;
-
-						}
-
-						break;
-
-					case THREE.MOUSE.PAN:
-						if ( event.ctrlKey || event.metaKey || event.shiftKey ) {
-
-							if ( scope.enableRotate === false ) return;
-							handleMouseDownRotate( event );
-							state = STATE.ROTATE;
-
-						} else {
-
-							if ( scope.enablePan === false ) return;
-							handleMouseDownPan( event );
-							state = STATE.PAN;
-
-						}
-
-						break;
-
-					default:
-						state = STATE.NONE;
-
-				}
-
-				if ( state !== STATE.NONE ) {
-
-					scope.domElement.ownerDocument.addEventListener( 'pointermove', onPointerMove );
-					scope.domElement.ownerDocument.addEventListener( 'pointerup', onPointerUp );
-					scope.dispatchEvent( _startEvent );
-
-				}
-
-			}
-
-			function onMouseMove( event ) {
-
-				if ( scope.enabled === false ) return;
-				event.preventDefault();
-
-				switch ( state ) {
-
-					case STATE.ROTATE:
-						if ( scope.enableRotate === false ) return;
-						handleMouseMoveRotate( event );
-						break;
-
-					case STATE.DOLLY:
-						if ( scope.enableZoom === false ) return;
-						handleMouseMoveDolly( event );
-						break;
-
-					case STATE.PAN:
-						if ( scope.enablePan === false ) return;
-						handleMouseMovePan( event );
-						break;
-
-				}
-
-			}
-
-			function onMouseUp( event ) {
-
-				scope.domElement.ownerDocument.removeEventListener( 'pointermove', onPointerMove );
-				scope.domElement.ownerDocument.removeEventListener( 'pointerup', onPointerUp );
-				if ( scope.enabled === false ) return;
-				handleMouseUp( event );
-				scope.dispatchEvent( _endEvent );
-				state = STATE.NONE;
-
-			}
-
-			function onMouseWheel( event ) {
-
-				if ( scope.enabled === false || scope.enableZoom === false || state !== STATE.NONE && state !== STATE.ROTATE ) return;
-				event.preventDefault();
-				scope.dispatchEvent( _startEvent );
-				handleMouseWheel( event );
-				scope.dispatchEvent( _endEvent );
-
-			}
-
-			function onKeyDown( event ) {
-
-				if ( scope.enabled === false || scope.enablePan === false ) return;
-				handleKeyDown( event );
-
-			}
-
-			function onTouchStart( event ) {
-
-				if ( scope.enabled === false ) return;
-				event.preventDefault(); // prevent scrolling
-
-				switch ( event.touches.length ) {
-
-					case 1:
-						switch ( scope.touches.ONE ) {
-
-							case THREE.TOUCH.ROTATE:
-								if ( scope.enableRotate === false ) return;
-								handleTouchStartRotate( event );
-								state = STATE.TOUCH_ROTATE;
-								break;
-
-							case THREE.TOUCH.PAN:
-								if ( scope.enablePan === false ) return;
-								handleTouchStartPan( event );
-								state = STATE.TOUCH_PAN;
-								break;
-
-							default:
-								state = STATE.NONE;
-
-						}
-
-						break;
-
-					case 2:
-						switch ( scope.touches.TWO ) {
-
-							case THREE.TOUCH.DOLLY_PAN:
-								if ( scope.enableZoom === false && scope.enablePan === false ) return;
-								handleTouchStartDollyPan( event );
-								state = STATE.TOUCH_DOLLY_PAN;
-								break;
-
-							case THREE.TOUCH.DOLLY_ROTATE:
-								if ( scope.enableZoom === false && scope.enableRotate === false ) return;
-								handleTouchStartDollyRotate( event );
-								state = STATE.TOUCH_DOLLY_ROTATE;
-								break;
-
-							default:
-								state = STATE.NONE;
-
-						}
-
-						break;
-
-					default:
-						state = STATE.NONE;
-
-				}
-
-				if ( state !== STATE.NONE ) {
-
-					scope.dispatchEvent( _startEvent );
-
-				}
-
-			}
-
-			function onTouchMove( event ) {
-
-				if ( scope.enabled === false ) return;
-				event.preventDefault(); // prevent scrolling
-
-				switch ( state ) {
-
-					case STATE.TOUCH_ROTATE:
-						if ( scope.enableRotate === false ) return;
-						handleTouchMoveRotate( event );
-						scope.update();
-						break;
-
-					case STATE.TOUCH_PAN:
-						if ( scope.enablePan === false ) return;
-						handleTouchMovePan( event );
-						scope.update();
-						break;
-
-					case STATE.TOUCH_DOLLY_PAN:
-						if ( scope.enableZoom === false && scope.enablePan === false ) return;
-						handleTouchMoveDollyPan( event );
-						scope.update();
-						break;
-
-					case STATE.TOUCH_DOLLY_ROTATE:
-						if ( scope.enableZoom === false && scope.enableRotate === false ) return;
-						handleTouchMoveDollyRotate( event );
-						scope.update();
-						break;
-
-					default:
-						state = STATE.NONE;
-
-				}
-
-			}
-
-			function onTouchEnd( event ) {
-
-				if ( scope.enabled === false ) return;
-				handleTouchEnd( event );
-				scope.dispatchEvent( _endEvent );
-				state = STATE.NONE;
-
-			}
-
-			function onContextMenu( event ) {
-
-				if ( scope.enabled === false ) return;
-				event.preventDefault();
-
-			} //
-
-
-			scope.domElement.addEventListener( 'contextmenu', onContextMenu );
-			scope.domElement.addEventListener( 'pointerdown', onPointerDown );
-			scope.domElement.addEventListener( 'wheel', onMouseWheel, {
-				passive: false
-			} );
-			scope.domElement.addEventListener( 'touchstart', onTouchStart, {
-				passive: false
-			} );
-			scope.domElement.addEventListener( 'touchend', onTouchEnd );
-			scope.domElement.addEventListener( 'touchmove', onTouchMove, {
-				passive: false
-			} ); // force an update at start
-
-			this.update();
-
-		}
-
-	} // This set of controls performs orbiting, dollying (zooming), and panning.
-	// Unlike TrackballControls, it maintains the "up" direction object.up (+Y by default).
-	// This is very similar to OrbitControls, another set of touch behavior
-	//
-	//    Orbit - right mouse, or left mouse + ctrl/meta/shiftKey / touch: two-finger rotate
-	//    Zoom - middle mouse, or mousewheel / touch: two-finger spread or squish
-	//    Pan - left mouse, or arrow keys / touch: one-finger move
-
-
-	class MapControls extends OrbitControls {
-
-		constructor( object, domElement ) {
-
-			super( object, domElement );
-			this.screenSpacePanning = false; // pan orthogonal to world-space direction camera.up
-
-			this.mouseButtons.LEFT = THREE.MOUSE.PAN;
-			this.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
-			this.touches.ONE = THREE.TOUCH.PAN;
-			this.touches.TWO = THREE.TOUCH.DOLLY_ROTATE;
-
-		}
-
-	}
-
-	THREE.MapControls = MapControls;
-	THREE.OrbitControls = OrbitControls;
-
-} )();
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-import { initCamera, onMouseMove, camera } from './camera.js';
-import { keys, player } from './player.js';
-import { updateMovement } from './movement.js';
-import { updateWorld, addBlock, removeBlock, BLOCK_TYPES } from './world.js';
-import { blockIntersectsPlayer } from './collision.js';
-
-// or if you do chunk-based generation with Perlin:
+import * as THREE from 'three';
+// Camera, Player, Movement imports (assuming they are enhanced as discussed previously)
+import { initCamera, onMouseMove, camera, playerPitchObject, playerYawObject } from './camera.js';
+import { keys, player, PLAYER_CONFIG, PLAYER_STATE, getPlayerCollisionHeight, getPlayerEyeHeight } from './player.js';
+import { updateMovement } from './movement.js'; // Assumes this uses the refined checkCollision
+// World imports (assuming async worker setup, state management)
+import {
+    BLOCK_TYPES, CHUNK_SIZE, CHUNK_HEIGHT, RENDER_DISTANCE,
+    getChunk, hasChunkData, worldChunkPromiseManager, // Need a way to track loading promises
+    requestChunkGeneration, // Trigger worker generation
+    setMainScene as setWorldScene, // Pass scene to world module
+    setTextureAtlas as setWorldAtlas, // Pass texture atlas info to world module (maybe just config)
+    processRebuildQueue, // Process chunks needing remeshing
+    addBlock, removeBlock, getBlock // World interaction functions
+} from './world.js';
+// Collision import (will be refined)
+import { checkCollision } from './collision.js'; // Assumes this is now more sophisticated
+// Worldgen import (for spawn height)
 import { getSurfaceHeight } from './worldgen.js';
+// UI Framework (using simple HTML/CSS structure for now)
+// import { initUI, updateUI } from './ui.js'; // Placeholder for a dedicated UI module
+// Sound Effects
+import { initAudio, playSound, playBlockSound } from './audio.js'; // Placeholder for audio module
 
-let scene, renderer;
-let selectedBlock = 0;
+// --- Global Variables ---
+let scene, renderer, clock;
+let selectedBlock = 0; // Default block type index
+const hotbarElements = [];
+const interactionReach = 5; // Max distance in blocks
 
-init();
-animate();
+// Block Highlighting
+let highlightMesh;
+const highlightMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false });
+const highlightGeometry = new THREE.PlaneGeometry(1.01, 1.01); // Slightly larger than block face
 
-function init() {
-  scene = new THREE.Scene();
-  renderer = new THREE.WebGLRenderer();
-  renderer.setSize(innerWidth, innerHeight);
-  document.body.appendChild(renderer.domElement);
+// Loading State
+let isLoading = true; // Flag to control when game loop starts full updates
 
-  // Lighting
-  const ambient = new THREE.AmbientLight(0xffffff, 0.8);
-  scene.add(ambient);
-  const sun = new THREE.DirectionalLight(0xffffff, 0.5);
-  sun.position.set(0,100,0);
-  scene.add(sun);
+// --- Main Execution ---
+// Use an async function to allow waiting for initial world load
+async function main() {
+    await init(); // Wait for initialization (including initial chunk load)
+    isLoading = false; // Mark loading as complete
+    console.log("Initialization complete. Starting animation loop.");
+    animate(); // Start the main loop
+}
+main(); // Run the async main function
 
-  // Decide spawn so not underground
-  const surfaceY = getSurfaceHeight(0,0); 
-  player.position.set(0, surfaceY + 5, 0);
 
-  initCamera(scene);
+// --- Initialization (Async) ---
+async function init() {
+    console.log("Initializing...");
+    clock = new THREE.Clock();
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87CEEB);
 
-  // Input
-  document.addEventListener('keydown', e => (keys[e.key.toLowerCase()] = true));
-  document.addEventListener('keyup', e => (keys[e.key.toLowerCase()] = false));
-  document.addEventListener('mousemove', onMouseMove);
-  document.addEventListener('click', () => document.body.requestPointerLock());
-  document.addEventListener('mousedown', onMouseDown);
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
 
-  // Crosshair
-  const crosshair = document.createElement('div');
-  crosshair.style.position = 'absolute';
-  crosshair.style.top = '50%';
-  crosshair.style.left = '50%';
-  crosshair.style.width = '10px';
-  crosshair.style.height = '10px';
-  crosshair.style.backgroundColor = 'white';
-  crosshair.style.transform = 'translate(-50%, -50%)';
-  crosshair.style.zIndex = '1000';
-  document.body.appendChild(crosshair);
+    // Lighting
+    const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+    scene.add(ambient);
+    const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+    sun.position.set(50, 100, 25);
+    scene.add(sun);
+    scene.add(sun.target);
 
-  // Hotbar
-  createHotbar();
+    // Player Spawn Position (Calculated before async loading)
+    let spawnX = 0, spawnZ = 0;
+    try {
+        const surfaceY = getSurfaceHeight(spawnX, spawnZ);
+        player.position.set(spawnX + 0.5, surfaceY + 0.5, spawnZ + 0.5); // Center in block
+        console.log(`Player spawn calculated at: ${player.position.x.toFixed(2)}, ${player.position.y.toFixed(2)}, ${player.position.z.toFixed(2)}`);
+    } catch (error) {
+        console.error("Failed to get surface height for spawn:", error);
+        player.position.set(0.5, 30.5, 0.5); // Fallback spawn
+    }
+
+    // Initialize Camera (after player position is set)
+    initCamera(scene, getPlayerEyeHeight()); // Use helper for eye height
+
+    // Setup World Module (Pass scene, etc.)
+    setWorldScene(scene); // Allow world module to add/remove meshes
+    // TODO: Load texture atlas and pass info/bitmap to world module/worker
+    // let textureAtlas = loadMyTextureAtlas();
+    // setWorldAtlas(textureAtlas);
+
+    // Initialize Audio System
+    initAudio(camera); // Needs camera for listener position
+
+    // --- Asynchronous Initial Chunk Loading ---
+    console.log("Requesting initial chunks...");
+    const initialLoadPromises = [];
+    const initialRadius = 1; // Load a small radius around spawn synchronously-ish
+    const playerCX = Math.floor(player.position.x / CHUNK_SIZE);
+    const playerCZ = Math.floor(player.position.z / CHUNK_SIZE);
+
+    for (let dx = -initialRadius; dx <= initialRadius; dx++) {
+        for (let dz = -initialRadius; dz <= initialRadius; dz++) {
+            const cx = playerCX + dx;
+            const cz = playerCZ + dz;
+            // Use the promise manager from world.js to get/create a promise for this chunk
+            initialLoadPromises.push(worldChunkPromiseManager.ensureChunkReady(cx, cz));
+            // Trigger generation if not already loading (ensureChunkReady should handle this)
+             // requestChunkGeneration(cx, cz); // This might be handled within ensureChunkReady
+        }
+    }
+
+    // Wait for all essential initial chunks to be generated AND meshed
+    try {
+        await Promise.all(initialLoadPromises);
+        console.log("Initial chunks loaded and meshed.");
+    } catch (error) {
+        console.error("Error loading initial chunks:", error);
+        // Handle error appropriately - maybe proceed with fewer chunks?
+    }
+    // --- End Async Load ---
+
+    // Initialize Block Highlighter
+    highlightMesh = new THREE.Mesh(highlightGeometry, highlightMaterial);
+    highlightMesh.visible = false;
+    scene.add(highlightMesh);
+
+    // Input Event Listeners (added after initial load potentially)
+    document.addEventListener('keydown', (e) => { keys[e.key.toLowerCase()] = true; handleKeyDown(e); });
+    document.addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('click', () => {
+        if (!document.pointerLockElement) {
+            document.body.requestPointerLock({ unadjustedMovement: true })
+                .catch(err => console.warn("Cannot request pointer lock:", err));
+        }
+    });
+    document.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('resize', onWindowResize);
+
+    // UI Elements
+    createUILayout(); // Setup main UI container
+    createCrosshair();
+    createHotbar();
+    updateHotbarSelection();
+
+    console.log("Initialization sequence finished.");
 }
 
+// --- Core Animation Loop ---
 function animate() {
-  requestAnimationFrame(animate);
+    requestAnimationFrame(animate);
+    if (isLoading) return; // Don't run updates until init is complete
 
-  // Movement & collisions
-  updateMovement();
+    const deltaTime = Math.min(0.05, clock.getDelta()); // Clamp delta time to avoid large jumps
 
-  // Load/generate chunks around player
-  updateWorld(player.position.x, player.position.z, scene);
+    // 1. Update Block Highlighting
+    updateBlockHighlight();
 
-  renderer.render(scene, camera);
+    // 2. Update player movement and physics
+    updateMovement(deltaTime); // Assumes movement.js calls the refined checkCollision
+
+    // 3. Update World (load/unload chunks based on player pos, process mesh queue)
+    // Make updateWorld handle async requests internally now
+    updateWorld(player.position.x, player.position.z); // Scene already passed in init
+    processRebuildQueue(); // Process any pending mesh updates
+
+    // 4. Update UI (if needed)
+    // updateUI(deltaTime); // Placeholder for dynamic UI updates
+
+    // 5. Render the scene
+    renderer.render(scene, camera);
 }
 
-function onMouseDown(e) {
-	const raycaster = new THREE.Raycaster();
-	raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
-  
-	// Use "true" so we intersect child meshes inside the chunk group
-	const intersects = raycaster.intersectObjects(scene.children, true);
-	if (intersects.length === 0) return;
-  
-	// Grab the closest hit
-	const intersect = intersects[0];
-	const object = intersect.object;
-  
-	// CASE 1: We hit a normal Mesh (if you still have any).
-	if (object.isMesh && !object.isInstancedMesh) {
-	  // The old “round the intersection point” approach *might* work:
-	  const blockX = Math.round(intersect.point.x - intersect.face.normal.x * 0.5);
-	  const blockY = Math.round(intersect.point.y - intersect.face.normal.y * 0.5);
-	  const blockZ = Math.round(intersect.point.z - intersect.face.normal.z * 0.5);
-  
-	  if (e.button === 0) {
-		removeBlock(blockX, blockY, blockZ, scene);
-	  } else if (e.button === 2) {
-		// Place a block one step away in the face’s normal
-		const newX = Math.round(intersect.point.x + intersect.face.normal.x * 0.5);
-		const newY = Math.round(intersect.point.y + intersect.face.normal.y * 0.5);
-		const newZ = Math.round(intersect.point.z + intersect.face.normal.z * 0.5);
-		addBlock(newX, newY, newZ, selectedBlock, scene);
-	  }
-	  return;
-	}
-  
-	// CASE 2: We hit an InstancedMesh 
-	if (object.isInstancedMesh) {
-	  const instanceId = intersect.instanceId;
-	  if (instanceId === undefined) return;  // should not happen if isInstancedMesh
-  
-	  // Retrieve that instance's transform
-	  const dummy = new THREE.Object3D();
-	  object.getMatrixAt(instanceId, dummy.matrix);
-	  dummy.matrix.decompose(dummy.position, dummy.quaternion, dummy.scale);
-	  // `dummy.position` is the center of the block in world space
-  
-	  // Convert that position to integer block coords
-	  // because we originally placed the block at (worldX + x + 0.5, y+0.5, worldZ + z + 0.5)
-	  const blockX = Math.floor(dummy.position.x);
-	  const blockY = Math.floor(dummy.position.y);
-	  const blockZ = Math.floor(dummy.position.z);
-  
-	  if (e.button === 0) {
-		// Remove exactly this block
-		removeBlock(blockX, blockY, blockZ, scene);
-	  } else if (e.button === 2) {
-		// Place a new block on the "outside" of the face we clicked.
-		// But for InstancedMesh, intersect.face might not be as intuitive. 
-		// If you do want to place adjacent to the face we clicked:
-		const nx = Math.round(intersect.face.normal.x); 
-		const ny = Math.round(intersect.face.normal.y); 
-		const nz = Math.round(intersect.face.normal.z);
-  
-		const newX = blockX + nx;
-		const newY = blockY + ny;
-		const newZ = blockZ + nz;
-  
-		addBlock(newX, newY, newZ, selectedBlock, scene);
-	  }
-	}
-  }
-  
+// --- Event Handlers ---
+function onWindowResize() {
+    if (!camera || !renderer) return;
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function handleKeyDown(event) {
+    // Hotbar selection
+    if (event.key >= '1' && event.key <= '9') {
+        selectHotbar(parseInt(event.key) - 1);
+    } else if (event.key === '0') {
+        selectHotbar(9); // 10th slot
+    }
+
+    // Placeholder for opening inventory/menu
+    if (event.key === 'e') {
+        console.log("Inventory key pressed (UI not implemented)");
+        // toggleInventoryUI();
+    }
+    if (event.key === 'escape') {
+         if (document.pointerLockElement) {
+             document.exitPointerLock();
+             console.log("Exited pointer lock (Menu UI not implemented)");
+             // showMainMenu();
+         }
+    }
+}
+
+function getTargetedBlock() {
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+    raycaster.far = interactionReach;
+    const intersects = raycaster.intersectObjects(scene.children, true)
+                               .filter(intersect => intersect.object.isMesh); // Only care about meshes
+
+    if (intersects.length > 0) {
+        const intersect = intersects[0];
+        const pointSub = intersect.point.clone().sub(raycaster.ray.direction.clone().multiplyScalar(0.01));
+        const pointAdd = intersect.point.clone().add(raycaster.ray.direction.clone().multiplyScalar(0.01));
+
+        // Ensure face normal is available and reasonable
+        const normal = intersect.face?.normal?.clone();
+        if (!normal) return null; // Need normal for highlight orientation
+
+        // Make sure normal is in world space if the object is rotated/scaled
+        // For chunk meshes that aren't rotated, object normal == world normal
+         // If using InstancedMesh, might need: normal.transformDirection(intersect.object.matrixWorld);
+
+        return {
+            remove: { x: Math.floor(pointSub.x), y: Math.floor(pointSub.y), z: Math.floor(pointSub.z) },
+            add: { x: Math.floor(pointAdd.x), y: Math.floor(pointAdd.y), z: Math.floor(pointAdd.z) },
+            normal: normal, // World-space normal of the face hit
+            position: { x: Math.floor(pointSub.x), y: Math.floor(pointSub.y), z: Math.floor(pointSub.z) } // Position of the block hit
+        };
+    }
+    return null;
+}
+
+
+function updateBlockHighlight() {
+    if (!highlightMesh) return;
+
+    const target = getTargetedBlock();
+
+    if (target && target.position) {
+         // Position the highlight slightly offset from the block face
+         highlightMesh.position.set(
+             target.position.x + 0.5, // Center of the block
+             target.position.y + 0.5,
+             target.position.z + 0.5
+         );
+         // Use the normal to orient the highlight plane
+         highlightMesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), target.normal);
+         // Offset slightly *out* from the face
+         highlightMesh.position.addScaledVector(target.normal, 0.005);
+
+        highlightMesh.visible = true;
+    } else {
+        highlightMesh.visible = false;
+    }
+}
+
+function onMouseDown(event) {
+    if (!document.pointerLockElement) {
+        if(!isLoading) document.body.requestPointerLock({ unadjustedMovement: true }).catch(err => {}); // Request lock if not loading
+        return;
+    }
+
+    const target = getTargetedBlock();
+    if (!target) return; // No block targeted
+
+    const { remove: removeCoords, add: addCoords } = target;
+
+    if (event.button === 0) { // Left click - Remove block
+        console.log(`Attempt remove at: ${removeCoords.x}, ${removeCoords.y}, ${removeCoords.z}`);
+        const removedBlockType = getBlock(removeCoords.x, removeCoords.y, removeCoords.z); // Get type before removing
+        if (removeBlock(removeCoords.x, removeCoords.y, removeCoords.z)) { // Check if removal was successful
+             playBlockSound(removedBlockType, 'break', new THREE.Vector3(removeCoords.x + 0.5, removeCoords.y + 0.5, removeCoords.z + 0.5));
+        }
+    } else if (event.button === 2) { // Right click - Place block
+        console.log(`Attempt place at: ${addCoords.x}, ${addCoords.y}, ${addCoords.z} (type: ${selectedBlock})`);
+
+        // Collision Check Before Placing
+        const playerHeight = getPlayerCollisionHeight();
+        const playerRadius = PLAYER_CONFIG.radius;
+        const playerAABB = new THREE.Box3().setFromCenterAndSize(
+            new THREE.Vector3(player.position.x, player.position.y + playerHeight / 2, player.position.z), // Center of player AABB
+            new THREE.Vector3(playerRadius * 2, playerHeight, playerRadius * 2)
+        );
+        const blockAABB = new THREE.Box3(
+            new THREE.Vector3(addCoords.x, addCoords.y, addCoords.z),
+            new THREE.Vector3(addCoords.x + 1, addCoords.y + 1, addCoords.z + 1)
+        );
+
+        if (playerAABB.intersectsBox(blockAABB)) {
+            console.log("Cannot place block: intersects player.");
+            return;
+        }
+        // End Collision Check
+
+        if (addBlock(addCoords.x, addCoords.y, addCoords.z, selectedBlock)) { // Check if adding was successful
+            playBlockSound(selectedBlock, 'place', new THREE.Vector3(addCoords.x + 0.5, addCoords.y + 0.5, addCoords.z + 0.5));
+        }
+    }
+}
+
+// --- UI Functions ---
+
+function createUILayout() {
+    // Ensure a main container exists
+    let uiContainer = document.getElementById('ui-container');
+    if (!uiContainer) {
+        uiContainer = document.createElement('div');
+        uiContainer.id = 'ui-container';
+        document.body.appendChild(uiContainer);
+        // Basic styles for the container could be added via CSS
+        /* Example CSS:
+        #ui-container {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            pointer-events: none; // Allow clicks to pass through normally
+            overflow: hidden; // Prevent scrollbars if content overflows
+            z-index: 10; // Ensure UI is above renderer canvas
+        }
+        #ui-container > * { // Allow pointer events on direct children like hotbar/menus
+             pointer-events: auto;
+        }
+        */
+    }
+    // Ensure hotbar exists within the container
+    let hotbar = document.getElementById('hotbar');
+    if (!hotbar) {
+        hotbar = document.createElement('div');
+        hotbar.id = 'hotbar';
+        uiContainer.appendChild(hotbar);
+         /* Example CSS for hotbar positioning:
+         #hotbar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            background-color: rgba(0,0,0,0.3);
+            padding: 5px;
+            border-radius: 3px;
+         }
+         .block-item { ... }
+         .block-item.selected { ... }
+         */
+    }
+}
+
+
+function createCrosshair() {
+    // Ensure it's within the UI container
+    const uiContainer = document.getElementById('ui-container');
+    if (!uiContainer) return;
+
+    let crosshair = document.getElementById('crosshair');
+    if (!crosshair) {
+        crosshair = document.createElement('div');
+        crosshair.id = 'crosshair';
+        uiContainer.appendChild(crosshair);
+         // Apply styles via CSS (see previous example)
+    }
+}
 
 function createHotbar() {
-  const hotbar = document.getElementById('hotbar');
-  BLOCK_TYPES.forEach((btype, index) => {
-    const div = document.createElement('div');
-    div.className = 'block-item';
-    div.style.backgroundColor = '#' + btype.color.toString(16).padStart(6,'0');
-    div.addEventListener('click', () => {
-      selectedBlock = index;
-      console.log('Selected block =', index);
-    });
-    hotbar.appendChild(div);
-  });
+    const hotbar = document.getElementById('hotbar');
+    if (!hotbar) {
+        console.error("Element with ID 'hotbar' not found!");
+        return;
+    }
+    hotbar.innerHTML = '';
+    hotbarElements.length = 0;
+
+    const maxHotbarItems = Math.min(Object.keys(BLOCK_TYPES).filter(id => id >= 0).length, 10); // Filter out air, limit to 10
+    let displayedItems = 0;
+
+     // Iterate through block types ensuring a consistent order if BLOCK_TYPES is an object
+     const blockIds = Object.keys(BLOCK_TYPES)
+                           .map(id => parseInt(id))
+                           .filter(id => id >= 0) // Exclude air/negative IDs
+                           .sort((a, b) => a - b); // Sort IDs numerically
+
+    for(const id of blockIds) {
+        if (displayedItems >= maxHotbarItems) break;
+        const btype = BLOCK_TYPES[id];
+        if (!btype) continue;
+
+        const div = document.createElement('div');
+        div.className = 'block-item';
+        div.style.backgroundColor = '#' + (btype.color || 0xcccccc).toString(16).padStart(6, '0');
+        // TODO: Add background image logic for textures
+        div.title = btype.name || `Block ${id}`;
+        div.dataset.blockId = id; // Store actual block ID
+
+        div.addEventListener('click', () => {
+            selectHotbarById(id);
+        });
+
+        hotbar.appendChild(div);
+        hotbarElements.push(div);
+        displayedItems++;
+    }
+
+    if (hotbarElements.length > 0) {
+        selectHotbarById(parseInt(hotbarElements[0].dataset.blockId)); // Select first available block ID
+    }
 }
+
+// Select by actual Block ID now
+function selectHotbarById(blockId) {
+    if (BLOCK_TYPES[blockId] === undefined || BLOCK_TYPES[blockId].id < 0) return; // Ensure it's a valid, non-air block
+    selectedBlock = blockId; // Store the ID
+    console.log(`Selected block ID: ${blockId}`);
+    updateHotbarSelection();
+}
+
+
+function updateHotbarSelection() {
+    hotbarElements.forEach((div) => {
+        // Compare dataset block ID with the currently selected block ID
+        if (parseInt(div.dataset.blockId) === selectedBlock) {
+            div.classList.add('selected');
+        } else {
+            div.classList.remove('selected');
+        }
+    });
+     // Add CSS: .block-item.selected { border: 2px solid yellow; box-shadow: 0 0 5px yellow; }
+}
+
+// Placeholder for refined collision check - Move this to collision.js
+// import { getBlock } from './world.js'; // Need world access
+// function checkCollision(position, radius, height) {
+//     const playerAABB = new THREE.Box3(
+//         new THREE.Vector3(position.x - radius, position.y, position.z - radius),
+//         new THREE.Vector3(position.x + radius, position.y + height, position.z + radius)
+//     );
+//     // Get voxel range player overlaps
+//     const minX = Math.floor(playerAABB.min.x);
+//     const maxX = Math.floor(playerAABB.max.x);
+//     const minY = Math.floor(playerAABB.min.y);
+//     const maxY = Math.floor(playerAABB.max.y);
+//     const minZ = Math.floor(playerAABB.min.z);
+//     const maxZ = Math.floor(playerAABB.max.z);
+
+//     for (let y = minY; y <= maxY; y++) {
+//         for (let z = minZ; z <= maxZ; z++) {
+//             for (let x = minX; x <= maxX; x++) {
+//                 const blockId = getBlock(x, y, z); // Requires world access
+//                 const blockType = BLOCK_TYPES[blockId];
+//                 if (blockId !== undefined && blockId !== -1 && (!blockType || !blockType.transparent)) { // Check if block is solid
+//                     // Check for AABB intersection
+//                     const blockAABB = new THREE.Box3(
+//                          new THREE.Vector3(x, y, z),
+//                          new THREE.Vector3(x + 1, y + 1, z + 1)
+//                     );
+//                     if (playerAABB.intersectsBox(blockAABB)) {
+//                         return true; // Collision detected
+//                     }
+//                 }
+//             }
+//         }
+//     }
+//     return false; // No collision
+// }
+
+// Placeholder for audio module - Move this to audio.js
+// let audioListener;
+// const sounds = {};
+// const loader = new THREE.AudioLoader();
+
+// function initAudio(camera) {
+//     audioListener = new THREE.AudioListener();
+//     camera.add(audioListener); // Attach listener to camera
+
+//     // Preload sounds
+//     loadSound('jump', 'sounds/jump.wav');
+//     loadSound('step_stone1', 'sounds/step_stone1.wav');
+//     // ... load other sounds (break_stone, place_wood, etc.)
+// }
+
+// function loadSound(name, path) {
+//     loader.load(path, (buffer) => {
+//         sounds[name] = buffer;
+//         console.log(`Sound loaded: ${name}`);
+//     }, undefined, (err) => {
+//         console.error(`Failed to load sound ${name}:`, err);
+//     });
+// }
+
+// function playSound(name, volume = 0.5) {
+//     if (!sounds[name] || !audioListener) return;
+//     const sound = new THREE.Audio(audioListener);
+//     sound.setBuffer(sounds[name]);
+//     sound.setVolume(volume);
+//     sound.play();
+// }
+
+// function playBlockSound(blockId, action, position, volume = 0.5) {
+//      if (!audioListener) return;
+//      const blockType = BLOCK_TYPES[blockId]?.name || 'default'; // e.g., 'stone', 'grass', 'wood'
+//      const soundName = `${action}_${blockType}`; // e.g., 'break_stone', 'place_wood'
+
+//      if (!sounds[soundName]) {
+//          // Fallback sound? e.g., play generic break/place
+//          console.warn(`Sound not found for ${soundName}, playing fallback?`);
+//          // playSound(`generic_${action}`);
+//          return;
+//      }
+
+//      const sound = new THREE.PositionalAudio(audioListener);
+//      sound.setBuffer(sounds[soundName]);
+//      sound.setRefDistance(5); // Adjust based on desired falloff
+//      sound.setRolloffFactor(2);
+//      sound.setVolume(volume);
+
+//      // Need a mesh to attach positional audio to, or update position manually
+//      // Creating a temporary mesh is one way:
+//      const mesh = new THREE.Object3D(); // Use Object3D, no geometry needed
+//      mesh.position.copy(position);
+//      scene.add(mesh); // Add temporarily to scene graph for position updates
+//      mesh.add(sound);
+//      sound.play();
+
+//      // Optional: Remove the temporary object after sound finishes playing
+//      sound.onEnded = () => {
+//           sound.isPlaying = false; // Three.js doesn't reset this automatically for PositionalAudio sometimes
+//           mesh.remove(sound);
+//           scene.remove(mesh);
+//      };
+//      // If the sound might be stopped early, ensure cleanup happens then too
+// }
